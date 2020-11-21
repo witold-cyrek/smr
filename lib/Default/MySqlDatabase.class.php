@@ -1,26 +1,26 @@
 <?php declare(strict_types=1);
-require_once(CONFIG . 'SmrMySqlSecrets.inc');
 
 abstract class MySqlDatabase {
-	// add configuration static members via traits
-	use SmrMySqlSecrets;
-
 	protected static $dbConn;
 	protected static $selectedDbName;
+	private static MySqlProperties $mysqlProperties;
 	protected $dbResult = null;
 	protected $dbRecord = null;
-	
-	public function __construct($dbName) {
+
+	public function __construct() {
 		if (!self::$dbConn) {
 			// Set the mysqli driver to raise exceptions on errors
 			if (!mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT)) {
 				$this->error('Failed to enable mysqli error reporting');
 			}
-
-			self::$dbConn = new mysqli(self::$host, self::$user, self::$password,
-			                           $dbName, self::$port, self::$socket);
-			self::$selectedDbName = $dbName;
-
+			$mysqlProperties = new MySqlProperties();
+			self::$dbConn = new mysqli(
+				$mysqlProperties->getHost(),
+				$mysqlProperties->getUser(),
+				$mysqlProperties->getPassword(),
+				$mysqlProperties->getDatabaseName());
+			self::$mysqlProperties = $mysqlProperties;
+			self::$selectedDbName = $mysqlProperties->getDatabaseName();
 			// Default server charset should be set correctly. Using the default
 			// avoids the additional query involved in `set_charset`.
 			$charset = self::$dbConn->character_set_name();
@@ -28,12 +28,24 @@ abstract class MySqlDatabase {
 				$this->error('Unexpected charset: ' . $charset);
 			}
 		}
+	}
 
-		// Do we need to switch databases (e.g. for compatability db access)?
-		if (self::$selectedDbName != $dbName) {
-			self::$dbConn->select_db($dbName);
-			self::$selectedDbName = $dbName;
-		}
+	/**
+	 * This method will switch the connection to the specified database.
+	 * Useful for switching back and forth between historical, and live databases.
+	 *
+	 * @param string $databaseName The name of the database to switch to
+	 */
+	public function switchDatabases(string $databaseName) {
+		self::$dbConn->select_db($databaseName);
+		self::$selectedDbName = $databaseName;
+	}
+
+	/**
+	 * Switch back to the configured live database
+	 */
+	public function switchDatabaseToLive() {
+		$this->switchDatabases(self::$mysqlProperties->getDatabaseName());
 	}
 
 	/**
@@ -52,7 +64,7 @@ abstract class MySqlDatabase {
 			self::$dbConn = false;
 		}
 	}
-	
+
 	public function query($query) {
 		$this->dbResult = self::$dbConn->query($query);
 	}
@@ -64,7 +76,7 @@ abstract class MySqlDatabase {
 		if (!$this->dbResult) {
 			$this->error('No resource to get record from.');
 		}
-		
+
 		if ($this->dbRecord = $this->dbResult->fetch_assoc()) {
 			return true;
 		}
@@ -88,7 +100,7 @@ abstract class MySqlDatabase {
 	public function getField($name) {
 		return $this->dbRecord[$name];
 	}
-	
+
 	public function getBoolean($name) {
 		if ($this->dbRecord[$name] == 'TRUE') {
 			return true;
@@ -97,15 +109,15 @@ abstract class MySqlDatabase {
 		return false;
 //		throw new Exception('Field is not a boolean');
 	}
-	
+
 	public function getInt($name) {
 		return (int)$this->dbRecord[$name];
 	}
-	
+
 	public function getFloat($name) {
 		return (float)$this->dbRecord[$name];
 	}
-	
+
 	// WARNING: In the past, Microtime was stored in the database incorrectly.
 	// For backwards compatibility, set $pad_msec=true to try to guess at the
 	// intended value. This is not safe if the Microtime length is wrong for an
@@ -123,7 +135,7 @@ abstract class MySqlDatabase {
 		}
 		return "$sec.$msec";
 	}
-	
+
 	public function getObject($name, $compressed = false) {
 		$object = $this->getField($name);
 		if ($compressed === true) {
@@ -131,27 +143,27 @@ abstract class MySqlDatabase {
 		}
 		return unserialize($object);
 	}
-	
+
 	public function getRow() {
 		return $this->dbRecord;
 	}
-	
+
 	public function lockTable($table) {
 		self::$dbConn->query('LOCK TABLES ' . $table . ' WRITE');
 	}
-	
+
 	public function unlock() {
 		self::$dbConn->query('UNLOCK TABLES');
 	}
-	
+
 	public function getNumRows() {
 		return $this->dbResult->num_rows;
 	}
-	
+
 	public function getChangedRows() {
 		return self::$dbConn->affected_rows;
 	}
-	
+
 	public function getInsertID() {
 		return self::$dbConn->insert_id;
 	}
@@ -159,7 +171,7 @@ abstract class MySqlDatabase {
 	protected function error($err) {
 		throw new Exception($err);
 	}
-	
+
 	public function escape($escape, $autoQuotes = true, $quotes = true) {
 		if (is_bool($escape)) {
 			if ($autoQuotes) {
@@ -189,7 +201,7 @@ abstract class MySqlDatabase {
 			}
 		}
 	}
-	
+
 	public function escapeString($string, $quotes = true, $nullable = false) {
 		if ($nullable === true && ($string === null || $string === '')) {
 			return 'NULL';
@@ -211,11 +223,11 @@ abstract class MySqlDatabase {
 		}
 		return self::$dbConn->real_escape_string($string);
 	}
-	
+
 	public function escapeBinary($binary) {
 		return '0x' . bin2hex($binary);
 	}
-	
+
 	public function escapeArray(array $array, $autoQuotes = true, $quotes = true, $implodeString = ',', $escapeIndividually = true) {
 		$string = '';
 		if ($escapeIndividually) {
@@ -232,7 +244,7 @@ abstract class MySqlDatabase {
 		}
 		return $string;
 	}
-	
+
 	public function escapeNumber($num) {
 		// Numbers need not be quoted in MySQL queries, so if we know $num is
 		// numeric, we can simply return its value (no quoting or escaping).
@@ -242,13 +254,13 @@ abstract class MySqlDatabase {
 			throw new Exception('Not a number! (' . $num . ')');
 		}
 	}
-	
+
 	public function escapeMicrotime($microtime, $quotes = false) {
 		$sec_str = sprintf('%010d', $microtime);
 		$usec_str = sprintf('%06d', fmod($microtime, 1) * 1E6);
 		return $this->escapeString($sec_str . $usec_str, $quotes);
 	}
-	
+
 	public function escapeBoolean($bool, $quotes = true) {
 		if ($bool === true) {
 			return $this->escapeString('TRUE', $quotes);
@@ -258,7 +270,7 @@ abstract class MySqlDatabase {
 			throw new Exception('Not a boolean: ' . $bool);
 		}
 	}
-	
+
 	public function escapeObject($object, $compress = false, $quotes = true, $nullable = false) {
 		if ($compress === true) {
 			return $this->escapeBinary(gzcompress(serialize($object)));

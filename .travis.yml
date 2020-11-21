@@ -1,8 +1,30 @@
+env:
+  - DOCKER_COMPOSE_VERSION=1.27.4
+before_install:
+  - sudo rm /usr/local/bin/docker-compose
+  - curl -L https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-`uname -s`-`uname -m` > docker-compose
+  - chmod +x docker-compose
+  - sudo mv docker-compose /usr/local/bin
+dist: focal
+services:
+  - docker
 language: php
 php:
   - '7.4'
 git:
   depth: false
 script:
-  - tests/phplint.sh
-  - tests/strict_types.sh
+  - docker-compose --version
+  - test/phplint.sh
+  - test/strict_types.sh
+  - mv .env.sample .env
+  - mv config/config.specific.sample.php config/config.specific.php
+  - mv config/discord/config.specific.sample.php config/discord/config.specific.php
+  - mv config/irc/config.specific.sample.php config/irc/config.specific.php
+  - mv config/npc/config.specific.sample.php config/npc/config.specific.php
+  - composer run start:integration-services
+  - composer run test
+
+after_success:
+    # Upload coverage report written by PHPUnit to codecov.io
+    - bash <(curl -s https://codecov.io/bash) -f test/coverage.xml
